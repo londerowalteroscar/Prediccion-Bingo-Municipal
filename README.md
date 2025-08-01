@@ -1,1 +1,1 @@
-# Predicci-n-Bingo-Municipal
+# Prediccion-Bingo-Municipal
