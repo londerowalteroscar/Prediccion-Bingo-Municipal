@@ -1,33 +1,27 @@
 # 📦 Importación de librerías
 import pandas as pd
 from prophet import Prophet
-from datetime import timedelta
 import os
 import logging
-import sys
+import warnings
 
-# 🧹 Silenciar logs innecesarios de Prophet y cmdstanpy
+# 🔕 Silenciar logs innecesarios
 logging.getLogger("cmdstanpy").setLevel(logging.CRITICAL)
 logging.getLogger("prophet").setLevel(logging.CRITICAL)
-logging.getLogger("matplotlib").setLevel(logging.CRITICAL)
-
-# Desactivar warnings de consola
-import warnings
 warnings.filterwarnings("ignore")
 
-# 📁 Ruta del archivo Excel
+# 📁 Ruta al archivo
 ruta_archivo = os.path.join("data", "tombola.xlsx")
 
-# 📥 Cargar el archivo
+# 📥 Cargar datos
 df = pd.read_excel(ruta_archivo)
-
-# Preprocesamiento
 df.dropna(subset=["Numero", "Fecha"], inplace=True)
 df["Fecha"] = pd.to_datetime(df["Fecha"])
 df["Numero"] = df["Numero"].astype(int)
 
-# 🔮 Predicción con Prophet
-numeros_probables = []
+# 🔮 Inicialización de modelo Prophet por número
+modelo_por_numero = {}
+promedios_yhat = {}
 
 for numero in range(100):
     df_num = df.copy()
@@ -36,20 +30,23 @@ for numero in range(100):
     df_num.rename(columns={"Fecha": "ds"}, inplace=True)
 
     if df_num["y"].sum() < 3:
-        continue
+        continue  # evitar ruido con pocos datos
 
     try:
-        modelo = Prophet(daily_seasonality=True, yearly_seasonality=False, weekly_seasonality=True)
+        modelo = Prophet(daily_seasonality=True, weekly_seasonality=True, yearly_seasonality=False)
         modelo.fit(df_num)
 
         futuro = modelo.make_future_dataframe(periods=6)
         pred = modelo.predict(futuro)
 
-        if pred.tail(6)["yhat"].sum() > 0.5:
-            numeros_probables.append(numero)
+        yhat_promedio = pred.tail(6)["yhat"].mean()
+        promedios_yhat[numero] = yhat_promedio
     except:
         continue
 
-# ✅ Salida limpia
+# 📊 Obtener top 10 números con mayor promedio de predicción
+top_10_numeros = sorted(promedios_yhat, key=promedios_yhat.get, reverse=True)[:10]
+
+# ✅ Mostrar resultado final
 print("📅 Predicción de aparición para los próximos días con Prophet:")
-print(numeros_probables)
+print(top_10_numeros)
