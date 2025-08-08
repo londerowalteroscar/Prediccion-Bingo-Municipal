@@ -1,16 +1,19 @@
 # 📦 Importaciones
 import pandas as pd
 import os
+from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+
 from sklearn.metrics import classification_report, accuracy_score
 
-# 📁 Ruta al archivo Excel
-ruta_archivo = os.path.join("data", "tombola.xlsx")  # El script está en Scripts/
+# 📁 Ruta
+ruta_excel = os.path.join("data", "tombola.xlsx")
+ruta_salida = os.path.join("data", "modelo_rf_binario_tombola.csv")
 
 # 📥 Cargar datos
 try:
-    df = pd.read_excel(ruta_archivo)
+    df = pd.read_excel(ruta_excel)
     print("✅ Archivo cargado correctamente.")
 except FileNotFoundError:
     print("❌ Error: archivo no encontrado.")
@@ -21,12 +24,11 @@ df.dropna(subset=["Fecha", "Numero"], inplace=True)
 df["Fecha"] = pd.to_datetime(df["Fecha"], errors='coerce')
 df.dropna(subset=["Fecha"], inplace=True)
 
-# 🔄 Generar dataset binario
-todos_los_numeros = list(range(0, 100))
+# 🧱 Dataset binario
+todos_los_numeros = list(range(100))
 fechas = sorted(df["Fecha"].dt.date.unique())
 
 datos_binarios = []
-
 for fecha in fechas:
     numeros_dia = df[df["Fecha"].dt.date == fecha]["Numero"].tolist()
     for numero in todos_los_numeros:
@@ -34,67 +36,80 @@ for fecha in fechas:
             "fecha": fecha,
             "numero": numero,
             "salio": 1 if numero in numeros_dia else 0,
-            "dia_semana": pd.Timestamp(fecha).weekday()  # 0: lunes, ..., 6: domingo
+            "dia_semana": pd.Timestamp(fecha).weekday()
         })
 
 df_binario = pd.DataFrame(datos_binarios)
 
-# ➕ Feature: frecuencia histórica acumulada
-frecuencia_historica = {num: 0 for num in todos_los_numeros}
-frecuencias = []
+# 📅 Lógica de semanas
+fecha_inicio = df["Fecha"].min().date()
+fecha_fin = df["Fecha"].max().date()
+inicio_primera_semana = fecha_inicio - timedelta(days=fecha_inicio.weekday())
 
-for _, fila in df_binario.iterrows():
-    num = fila["numero"]
-    fecha = fila["fecha"]
-    frecuencias.append(frecuencia_historica[num])
-    if fila["salio"] == 1:
-        frecuencia_historica[num] += 1
+# 📦 Resultados
+resultados = []
 
-df_binario["frecuencia_pasada"] = frecuencias
+fecha_actual = inicio_primera_semana
+while fecha_actual <= fecha_fin:
+    inicio_semana = fecha_actual
+    fin_semana = inicio_semana + timedelta(days=6)
+    siguiente_semana = fin_semana + timedelta(days=1)
 
-# 🧪 Preparar datos para ML
-X = df_binario[["numero", "dia_semana", "frecuencia_pasada"]]
-y = df_binario["salio"]
+    # Datos hasta fin de semana actual
+    df_hist = df_binario[df_binario["fecha"] <= fin_semana]
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=True, random_state=42)
+    if df_hist.empty:
+        resultados.append({
+            "semana_inicio": inicio_semana.strftime("%Y-%m-%d"),
+            "semana_fin": fin_semana.strftime("%Y-%m-%d"),
+            "prediccion": ""
+        })
+        fecha_actual += timedelta(days=7)
+        continue
 
-# 🌳 Entrenar modelo Random Forest
-modelo = RandomForestClassifier(n_estimators=100, random_state=42)
-modelo.fit(X_train, y_train)
+    # Frecuencia acumulada
+    frecuencia_historica = {num: 0 for num in todos_los_numeros}
+    frecuencias = []
+    for _, fila in df_hist.iterrows():
+        num = fila["numero"]
+        frecuencias.append(frecuencia_historica[num])
+        if fila["salio"] == 1:
+            frecuencia_historica[num] += 1
+    df_hist["frecuencia_pasada"] = frecuencias
 
-# 📊 Evaluación
-y_pred = modelo.predict(X_test)
-print("\n📋 Reporte de Clasificación:")
-print(classification_report(y_test, y_pred))
-print("🎯 Precisión general:", round(accuracy_score(y_test, y_pred) * 100, 2), "%")
+    # Entrenamiento
+    X = df_hist[["numero", "dia_semana", "frecuencia_pasada"]]
+    y = df_hist["salio"]
+    if y.nunique() < 2:
+        prediccion = ""
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        modelo = RandomForestClassifier(n_estimators=100, random_state=42)
+        modelo.fit(X_train, y_train)
 
-# 🔍 Importancia de features
-importancias = modelo.feature_importances_
-nombres_features = X.columns.tolist()
-print("\n📈 Importancia de las features:")
-for nombre, importancia in zip(nombres_features, importancias):
-    print(f"- {nombre}: {round(importancia * 100, 2)}%")
+        # Día de inicio de la próxima semana
+        dia_pred = pd.Timestamp(siguiente_semana).weekday()
+        X_pred = pd.DataFrame({
+            "numero": todos_los_numeros,
+            "dia_semana": [dia_pred] * 100,
+            "frecuencia_pasada": [frecuencia_historica[num] for num in todos_los_numeros]
+        })
 
-# 🔮 PREDICCIÓN: números con más probabilidad de salir en la próxima fecha
-# Último día del dataset
-ultima_fecha = max(df_binario["fecha"])
-dia_semana = pd.Timestamp(ultima_fecha).weekday()
+        probas = modelo.predict_proba(X_pred)[:, 1]
+        X_pred["probabilidad_salir"] = probas
 
-# Crear X_pred: una fila por cada número (0-99) con las últimas frecuencias
-X_pred = pd.DataFrame({
-    "numero": todos_los_numeros,
-    "dia_semana": [dia_semana] * 100,
-    "frecuencia_pasada": [frecuencia_historica[num] for num in todos_los_numeros]
-})
+        top10 = X_pred.sort_values(by="probabilidad_salir", ascending=False).head(10)
+        prediccion = str(top10["numero"].tolist())
 
-# Predecir probabilidades
-probas = modelo.predict_proba(X_pred)[:, 1]  # Probabilidad de que salga (salio == 1)
-X_pred["probabilidad_salir"] = probas
+    resultados.append({
+        "semana_inicio": inicio_semana.strftime("%Y-%m-%d"),
+        "semana_fin": fin_semana.strftime("%Y-%m-%d"),
+        "prediccion": prediccion
+    })
 
-# Obtener los 10 números con mayor probabilidad
-top10 = X_pred.sort_values(by="probabilidad_salir", ascending=False).head(10)
-mejores_numeros = top10["numero"].tolist()
+    fecha_actual += timedelta(days=7)
 
-print("\n🔟 Números con mayor probabilidad de salir en el próximo sorteo:")
-print(mejores_numeros)
-
+# 💾 Guardar CSV
+df_resultado = pd.DataFrame(resultados)
+df_resultado.to_csv(ruta_salida, index=False)
+print(f"\n✅ Resultados guardados en: {ruta_salida}")

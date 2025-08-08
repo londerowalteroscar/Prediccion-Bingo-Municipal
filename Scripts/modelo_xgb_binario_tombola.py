@@ -3,92 +3,117 @@ import pandas as pd
 import os
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+from datetime import datetime, timedelta
 
-# 📁 Ruta al archivo Excel (carpeta "data" al mismo nivel que "Scripts")
-ruta_archivo = os.path.join("data", "tombola.xlsx")
+# 📁 Rutas
+ruta_excel = os.path.join("data", "tombola.xlsx")
+ruta_csv = os.path.join("data", "modelo_xgb_binario_tombola.csv")
 
 # 📥 Cargar datos
 try:
-    df = pd.read_excel(ruta_archivo)
+    df = pd.read_excel(ruta_excel)
     print("✅ Archivo cargado correctamente.")
 except FileNotFoundError:
     print("❌ Error: archivo no encontrado.")
     exit()
 
-# 🧹 Preprocesamiento
+# 🧹 Preprocesamiento inicial
 df.dropna(subset=["Fecha", "Numero"], inplace=True)
 df["Fecha"] = pd.to_datetime(df["Fecha"], errors='coerce')
 df.dropna(subset=["Fecha"], inplace=True)
+df["Numero"] = df["Numero"].astype(int)
 
-# 🔄 Generar dataset binario
+# 🎯 Variables auxiliares
 todos_los_numeros = list(range(0, 100))
-fechas = sorted(df["Fecha"].dt.date.unique())
-datos_binarios = []
+fecha_inicio = df["Fecha"].min().date()
+fecha_fin = df["Fecha"].max().date()
+inicio_primera_semana = fecha_inicio - timedelta(days=fecha_inicio.weekday())
 
-for fecha in fechas:
-    numeros_dia = df[df["Fecha"].dt.date == fecha]["Numero"].tolist()
-    for numero in todos_los_numeros:
-        datos_binarios.append({
-            "fecha": fecha,
-            "numero": numero,
-            "salio": 1 if numero in numeros_dia else 0,
-            "dia_semana": pd.Timestamp(fecha).weekday()
+# 📦 Lista para almacenar resultados semanales
+resultados = []
+
+fecha_actual = inicio_primera_semana
+while fecha_actual <= fecha_fin:
+    inicio_semana = fecha_actual
+    fin_semana = inicio_semana + timedelta(days=6)
+    fin_semana_datetime = datetime.combine(fin_semana, datetime.min.time())
+
+    # 📊 Filtrar datos hasta el final de esa semana
+    df_semanal = df[df["Fecha"] <= fin_semana_datetime]
+    if df_semanal.empty:
+        resultados.append({
+            "semana_inicio": inicio_semana.strftime('%Y-%m-%d'),
+            "semana_fin": fin_semana.strftime('%Y-%m-%d'),
+            "prediccion": ""
         })
+        fecha_actual += timedelta(days=7)
+        continue
 
-df_binario = pd.DataFrame(datos_binarios)
+    fechas = sorted(df_semanal["Fecha"].dt.date.unique())
+    datos_binarios = []
+    frecuencia_historica = {num: 0 for num in todos_los_numeros}
 
-# ➕ Feature: frecuencia histórica acumulada
-frecuencia_historica = {num: 0 for num in todos_los_numeros}
-frecuencias = []
+    # ⚙️ Generar dataset binario histórico
+    for fecha in fechas:
+        numeros_dia = df_semanal[df_semanal["Fecha"].dt.date == fecha]["Numero"].tolist()
+        for numero in todos_los_numeros:
+            datos_binarios.append({
+                "fecha": fecha,
+                "numero": numero,
+                "salio": 1 if numero in numeros_dia else 0,
+                "dia_semana": pd.Timestamp(fecha).weekday(),
+                "frecuencia_pasada": frecuencia_historica[numero]
+            })
+        for num in numeros_dia:
+            frecuencia_historica[num] += 1
 
-for _, fila in df_binario.iterrows():
-    num = fila["numero"]
-    frecuencias.append(frecuencia_historica[num])
-    if fila["salio"] == 1:
-        frecuencia_historica[num] += 1
+    df_binario = pd.DataFrame(datos_binarios)
 
-df_binario["frecuencia_pasada"] = frecuencias
+    # Entrenar modelo
+    X = df_binario[["numero", "dia_semana", "frecuencia_pasada"]]
+    y = df_binario["salio"]
 
-# 🧪 Preparar datos
-X = df_binario[["numero", "dia_semana", "frecuencia_pasada"]]
-y = df_binario["salio"]
+    if y.nunique() < 2:
+        print(f"⚠️ Semana {inicio_semana} - No hay variedad de clases para entrenar.")
+        resultados.append({
+            "semana_inicio": inicio_semana.strftime('%Y-%m-%d'),
+            "semana_fin": fin_semana.strftime('%Y-%m-%d'),
+            "prediccion": ""
+        })
+        fecha_actual += timedelta(days=7)
+        continue
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=True, random_state=42)
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, shuffle=True, random_state=42)
+    modelo = XGBClassifier(n_estimators=100, learning_rate=0.1, use_label_encoder=False, eval_metric='logloss', random_state=42)
+    modelo.fit(X_train, y_train)
 
-# 🚀 Entrenar modelo XGBoost
-modelo = XGBClassifier(n_estimators=100, learning_rate=0.1, use_label_encoder=False, eval_metric='logloss', random_state=42)
-modelo.fit(X_train, y_train)
+    # 🔮 Predecir para la semana siguiente
+    siguiente_semana = fin_semana + timedelta(days=1)
+    dia_semana = siguiente_semana.weekday()
 
-# 📊 Evaluación
-y_pred = modelo.predict(X_test)
-print("\n📋 Reporte de Clasificación:")
-print(classification_report(y_test, y_pred))
-print("🎯 Precisión general:", round(accuracy_score(y_test, y_pred) * 100, 2), "%")
+    X_pred = pd.DataFrame({
+        "numero": todos_los_numeros,
+        "dia_semana": [dia_semana] * 100,
+        "frecuencia_pasada": [frecuencia_historica[num] for num in todos_los_numeros]
+    })
 
-# 🔍 Importancia de features
-importancias = modelo.feature_importances_
-nombres_features = X.columns.tolist()
-print("\n📈 Importancia de las features:")
-for nombre, importancia in zip(nombres_features, importancias):
-    print(f"- {nombre}: {round(importancia * 100, 2)}%")
+    probas = modelo.predict_proba(X_pred)[:, 1]
+    X_pred["probabilidad_salir"] = probas
 
-# 🔮 Predicción para el próximo sorteo
-ultima_fecha = max(df_binario["fecha"])
-dia_semana = pd.Timestamp(ultima_fecha).weekday()
+    top10 = X_pred.sort_values(by="probabilidad_salir", ascending=False).head(10)
+    mejores_numeros = top10["numero"].tolist()
 
-X_pred = pd.DataFrame({
-    "numero": todos_los_numeros,
-    "dia_semana": [dia_semana] * 100,
-    "frecuencia_pasada": [frecuencia_historica[num] for num in todos_los_numeros]
-})
+    # ✅ Guardar predicción semanal
+    resultados.append({
+        "semana_inicio": inicio_semana.strftime('%Y-%m-%d'),
+        "semana_fin": fin_semana.strftime('%Y-%m-%d'),
+        "prediccion": str(mejores_numeros)
+    })
 
-probas = modelo.predict_proba(X_pred)[:, 1]  # Probabilidad de salir
-X_pred["probabilidad_salir"] = probas
+    # ➡️ Avanzar a la siguiente semana
+    fecha_actual += timedelta(days=7)
 
-# 🔟 Top 10 predicciones
-top10 = X_pred.sort_values(by="probabilidad_salir", ascending=False).head(10)
-mejores_numeros = top10["numero"].tolist()
-
-print("\n🔟 Números con mayor probabilidad de salir en el próximo sorteo:")
-print(mejores_numeros)
+# 💾 Guardar resultados
+df_resultado = pd.DataFrame(resultados)
+df_resultado.to_csv(ruta_csv, index=False)
+print(f"\n✅ Predicciones semanales guardadas en '{ruta_csv}'")
