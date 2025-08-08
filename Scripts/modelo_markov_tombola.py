@@ -2,7 +2,7 @@
 import pandas as pd
 import os
 from collections import defaultdict, Counter
-import random
+from datetime import timedelta
 
 # 📁 Ruta del archivo
 ruta_archivo = os.path.join("data", "tombola.xlsx")
@@ -18,39 +18,51 @@ df = df.sort_values("Fecha")
 
 # 🔧 Crear matriz de transición de Markov
 transiciones = defaultdict(list)
-
-# Agrupar por fecha, y registrar secuencias de números por día
 for _, grupo in df.groupby("Fecha"):
     numeros_dia = grupo["Numero"].tolist()
     for i in range(len(numeros_dia) - 1):
         transiciones[numeros_dia[i]].append(numeros_dia[i + 1])
 
-# 🔢 Contar transiciones para cada número
+# 🔢 Contar transiciones
 matriz_markov = {num: Counter(siguientes) for num, siguientes in transiciones.items()}
 
-# 🔮 Generar predicciones: partir del último número sorteado
-ultimo_numero = df.iloc[-1]["Numero"]
-predicciones = []
+# 📅 Generar predicciones semana por semana
+predicciones_semana = []
+fechas_inicio = pd.date_range(df["Fecha"].min(), df["Fecha"].max(), freq="W-MON")
 
-# Obtener las transiciones más probables desde el último número
-if ultimo_numero in matriz_markov and len(matriz_markov[ultimo_numero]) >= 3:
-    probables = matriz_markov[ultimo_numero].most_common(10)
-    predicciones = [num for num, _ in probables]
-else:
-    # Mezcla entre transiciones (si hay) y los más frecuentes globalmente
-    prob_transiciones = matriz_markov.get(ultimo_numero, {}).most_common()
-    predicciones = [num for num, _ in prob_transiciones]
+for inicio in fechas_inicio:
+    fin = inicio + timedelta(days=6)
 
-    # Rellenar con los más frecuentes si faltan
-    faltantes = 10 - len(predicciones)
-    if faltantes > 0:
-        top_global = df["Numero"].value_counts().index.tolist()
-        for num in top_global:
-            if num not in predicciones:
-                predicciones.append(num)
-            if len(predicciones) == 10:
-                break
+    # Tomar el último número antes o en la semana actual
+    df_semana = df[df["Fecha"] <= fin]
+    if df_semana.empty:
+        continue
+    ultimo_numero = df_semana.iloc[-1]["Numero"]
 
-# ✅ Mostrar predicciones
-print("🔗 Predicción con Cadenas de Markov (desde el último número sorteado):")
-print(predicciones[:10])
+    # Obtener predicciones iniciales (máximo 10) de la matriz Markov
+    if ultimo_numero in matriz_markov:
+        prediccion = [num for num, _ in matriz_markov[ultimo_numero].most_common(10)]
+    else:
+        prediccion = []
+
+    # Completar hasta 10 números usando los más frecuentes globales
+    top_global = df["Numero"].value_counts().index.tolist()
+    for num in top_global:
+        if num not in prediccion:
+            prediccion.append(num)
+        if len(prediccion) == 10:
+            break
+
+    predicciones_semana.append({
+        "semana_inicio": inicio.date(),
+        "semana_fin": fin.date(),
+        "prediccion": str(prediccion)  # Guardar como lista con corchetes
+    })
+
+# 💾 Guardar en CSV
+csv_path = os.path.join("data", "modelo_markov_tombola.csv")
+pd.DataFrame(predicciones_semana).to_csv(csv_path, index=False)
+
+# 📤 Mostrar última predicción
+print("📅 Última predicción generada:")
+print(predicciones_semana[-1])

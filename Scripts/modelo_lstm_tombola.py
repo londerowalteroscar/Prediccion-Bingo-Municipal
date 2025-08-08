@@ -18,9 +18,11 @@ except FileNotFoundError:
 df['Fecha'] = pd.to_datetime(df['Fecha'])
 df.dropna(subset=["Numero"], inplace=True)  # Eliminar filas sin número
 
+# Agrupar en secuencias por fecha
 secuencias = df.groupby('Fecha')['Numero'].apply(list).reset_index()
-secuencias = secuencias[secuencias['Numero'].apply(len) == 10]
+secuencias = secuencias[secuencias['Numero'].apply(len) == 10]  # Solo días con 10 números
 
+# Preparar datos para el modelo
 X = []
 y = []
 for secuencia in secuencias['Numero']:
@@ -48,17 +50,15 @@ model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accur
 X_encoded = np.array(X_encoded)
 model.fit(X_encoded, y_encoded, epochs=20, verbose=0)
 
-
-# 💾 Guardar el modelo entrenado (opcional pero recomendado)
-ruta_modelo = os.path.join("data", "modelo_lstm_tombola.h5")  # Ajusta la ruta si es necesario
+# 💾 Guardar el modelo entrenado
+ruta_modelo = os.path.join("data", "modelo_lstm_tombola.h5")
 model.save(ruta_modelo)
 
 # --- Predicciones Semanales y CSV ---
+ruta_csv = os.path.join("data", "modelo_lstm_tombola.csv")
 
-ruta_csv = os.path.join("data", "modelo_lstm_tombola.csv") # Nombre del archivo CSV
-
-fecha_inicio_datos = df["Fecha"].min().date()
-fecha_fin_datos = df["Fecha"].max().date()
+fecha_inicio_datos = secuencias["Fecha"].min().date()
+fecha_fin_datos = secuencias["Fecha"].max().date()
 inicio_primera_semana = fecha_inicio_datos - timedelta(days=fecha_inicio_datos.weekday())
 
 lista_resultados = []
@@ -69,27 +69,29 @@ while fecha_actual_prediccion <= fecha_fin_datos:
     fin_semana = inicio_semana + timedelta(days=6)
     fin_semana_datetime = datetime.combine(fin_semana, datetime.min.time())
 
-    df_filtrado = df[df["Fecha"] <= fin_semana_datetime]
+    # Filtrar secuencias hasta fin de semana
+    secuencias_filtradas = secuencias[secuencias["Fecha"] <= fin_semana_datetime]
 
-    # Obtener el último número de la secuencia para hacer la predicción
-    ultimo_numero = df_filtrado['Numero'].iloc[-1][-1]  # Último número de la última secuencia
+    if secuencias_filtradas.empty:
+        fecha_actual_prediccion += timedelta(days=7)
+        continue
+
+    # Último número de la última secuencia
+    ultimo_numero = secuencias_filtradas['Numero'].iloc[-1][-1]
 
     entrada = np.array([encoder.transform([ultimo_numero])[0]])
 
     predicciones = []
     for _ in range(10):
         pred = model.predict(entrada, verbose=0)
-        pred_num = encoder.inverse_transform([np.argmax(pred)])
-        predicciones.append(pred_num[0])
-        entrada = np.array([encoder.transform([pred_num[0]])[0]])
-
-    # Convertir las predicciones a strings para guardarlas en el CSV
-    prediccion_str = str(predicciones)
+        pred_num = int(encoder.inverse_transform([np.argmax(pred)])[0])  # convertir a int
+        predicciones.append(pred_num)
+        entrada = np.array([encoder.transform([pred_num])[0]])
 
     nuevo_registro = {
         'semana_inicio': inicio_semana.strftime('%Y-%m-%d'),
         'semana_fin': fin_semana.strftime('%Y-%m-%d'),
-        'prediccion': prediccion_str
+        'prediccion': str(predicciones)  # mantiene formato [n1, n2, ...]
     }
     lista_resultados.append(nuevo_registro)
 
